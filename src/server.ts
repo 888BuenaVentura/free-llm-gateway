@@ -9,7 +9,8 @@ const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 const CF_TOKEN = process.env.CF_API_TOKEN;
 const CF_ACCOUNT = process.env.CF_ACCOUNT_ID;
 const NVIDIA_KEY = process.env.NVIDIA_API_KEY;
-const COHERE_KEY = process.env.COHERE_API_KEY;   
+const COHERE_KEY = process.env.COHERE_API_KEY;
+const ZAI_KEY = process.env.ZAI_API_KEY;   
 const PORT = 3000;
 
 interface Provider {
@@ -298,6 +299,78 @@ if (COHERE_KEY) {
             try {
               const json = JSON.parse(payload);
               const text = json?.text || "";
+              if (text) {
+                res.write(`data: ${JSON.stringify({
+                  id: `chatcmpl-${Date.now()}`,
+                  object: "chat.completion.chunk",
+                  choices: [{ index: 0, delta: { content: text } }],
+                })}\n\n`);
+              }
+            } catch {}
+          }
+        }
+      }
+    },
+  });
+}   
+
+// --- Z.ai (GLM) ---
+if (ZAI_KEY) {
+  providers.push({
+    name: "zai",
+    async call(messages, model, opts) {
+      const resp = await fetch(
+        "https://api.z.ai/api/paas/v4/chat/completions",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${ZAI_KEY}` },
+          body: JSON.stringify({
+            model: model || "glm-4.7-flash",
+            messages,
+            ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+            ...(opts?.max_tokens !== undefined && { max_tokens: opts.max_tokens }),
+          }),
+        }
+      );
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error.message || "Z.ai error");
+      return {
+        text: data.choices?.[0]?.message?.content || "",
+        usage: data.usage ? { prompt_tokens: data.usage.prompt_tokens, completion_tokens: data.usage.completion_tokens, total_tokens: data.usage.total_tokens } : undefined,
+      };
+    },
+    async stream(messages, model, opts, res) {
+      const resp = await fetch(
+        "https://api.z.ai/api/paas/v4/chat/completions",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${ZAI_KEY}` },
+          body: JSON.stringify({
+            model: model || "glm-4.7-flash",
+            messages,
+            stream: true,
+            ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+            ...(opts?.max_tokens !== undefined && { max_tokens: opts.max_tokens }),
+          }),
+        }
+      );
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error("No stream");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const payload = line.slice(6).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const json = JSON.parse(payload);
+              const text = json.choices?.[0]?.delta?.content || "";
               if (text) {
                 res.write(`data: ${JSON.stringify({
                   id: `chatcmpl-${Date.now()}`,
