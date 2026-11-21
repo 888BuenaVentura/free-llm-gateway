@@ -9,6 +9,7 @@ const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 const CF_TOKEN = process.env.CF_API_TOKEN;
 const CF_ACCOUNT = process.env.CF_ACCOUNT_ID;
 const NVIDIA_KEY = process.env.NVIDIA_API_KEY;
+const COHERE_KEY = process.env.COHERE_API_KEY;   
 const PORT = 3000;
 
 interface Provider {
@@ -241,6 +242,76 @@ if (NVIDIA_KEY) {
 }
 
 // --- Endpoint con failover + streaming ---
+// --- Cohere ---
+if (COHERE_KEY) {
+  providers.push({
+    name: "cohere",
+    async call(messages, model, opts) {
+      const resp = await fetch(
+        "https://api.cohere.com/v2/chat",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${COHERE_KEY}` },
+          body: JSON.stringify({
+            model: model || "command-r-08-2024",
+            messages,
+            ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+            ...(opts?.max_tokens !== undefined && { max_tokens: opts.max_tokens }),
+          }),
+        }
+      );
+      const data = await resp.json();
+      if (data.message === undefined) throw new Error(data.message || "Cohere error");
+      return {
+        text: data.message?.content?.[0]?.text || "",
+        usage: data.usage ? { prompt_tokens: data.usage.input_tokens, completion_tokens: data.usage.output_tokens, total_tokens: data.usage.input_tokens + data.usage.output_tokens } : undefined,
+      };
+    },
+    async stream(messages, model, opts, res) {
+      const resp = await fetch(
+        "https://api.cohere.com/v2/chat?stream=true",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${COHERE_KEY}` },
+          body: JSON.stringify({
+            model: model || "command-r-08-2024",
+            messages,
+            ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+            ...(opts?.max_tokens !== undefined && { max_tokens: opts.max_tokens }),
+          }),
+        }
+      );
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error("No stream");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const payload = line.slice(6).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const json = JSON.parse(payload);
+              const text = json?.text || "";
+              if (text) {
+                res.write(`data: ${JSON.stringify({
+                  id: `chatcmpl-${Date.now()}`,
+                  object: "chat.completion.chunk",
+                  choices: [{ index: 0, delta: { content: text } }],
+                })}\n\n`);
+              }
+            } catch {}
+          }
+        }
+      }
+    },
+  });
+}   
 app.post("/v1/chat/completions", async (req, res) => {
   const { messages, model, temperature, max_tokens, stream } = req.body;
 
