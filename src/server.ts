@@ -21,6 +21,12 @@ interface Provider {
 
 const providers: Provider[] = [];
 
+// --- Métricas ---
+const metrics: Record<string, { requests: number; errors: number; tokens: number; lastUsed: number }> = {};
+for (const p of ["google", "cloudflare", "nvidia", "cohere", "zai"]) {
+  metrics[p] = { requests: 0, errors: 0, tokens: 0, lastUsed: 0 };
+}   
+
 // --- Google AI Studio ---
 if (GOOGLE_KEY) {
   providers.push({
@@ -396,41 +402,43 @@ app.post("/v1/chat/completions", async (req, res) => {
 
   for (const p of providers) {
     try {
-      if (stream) {
-        // Streaming: no se puede hacer failover a mitad de stream
-        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
-        res.write(`data: ${JSON.stringify({
-          id: `chatcmpl-${Date.now()}`,
-          object: "chat.completion.chunk",
-          choices: [{ index: 0, delta: { role: "assistant", content: "" } }],
-        })}\n\n`);
-        await p.stream(messages, model, { temperature, max_tokens }, res);
-        res.write("data: [DONE]\n\n");
-        return res.end();
-      } else {
-        const result = await p.call(messages, model, { temperature, max_tokens });
-        return res.json({
-          id: `chatcmpl-${Date.now()}`,
-          object: "chat.completion",
-          created: Math.floor(Date.now() / 1000),
-          model: model || p.name,
-          provider: p.name,
-          choices: [{ index: 0, message: { role: "assistant", content: result.text }, finish_reason: "stop" }],
-          usage: result.usage,
-        });
-      }
-    } catch (err: any) {
-      errors.push(`${p.name}: ${err.message}`);
-      if (stream) {
-        // Si ya empezamos a streamear, no podemos hacer failover
-        res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-        res.write("data: [DONE]\n\n");
-        return res.end();
-      }
-      continue;
-    }
+  metrics[p.name].requests++;
+  if (stream) {
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.write(`data: ${JSON.stringify({
+      id: `chatcmpl-${Date.now()}`,
+      object: "chat.completion.chunk",
+      choices: [{ index: 0, delta: { role: "assistant", content: "" } }],
+    })}\n\n`);
+    await p.stream(messages, model, { temperature, max_tokens }, res);
+    res.write("data: [DONE]\n\n");
+    return res.end();
+  } else {
+    const result = await p.call(messages, model, { temperature, max_tokens });
+    metrics[p.name].tokens += result.usage?.total_tokens || 0;
+    metrics[p.name].lastUsed = Date.now();
+    return res.json({
+      id: `chatcmpl-${Date.now()}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: model || p.name,
+      provider: p.name,
+      choices: [{ index: 0, message: { role: "assistant", content: result.text }, finish_reason: "stop" }],
+      usage: result.usage,
+    });
+  }
+} catch (err: any) {
+  metrics[p.name].errors++;
+  errors.push(`${p.name}: ${err.message}`);
+  if (stream) {
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.write("data: [DONE]\n\n");
+    return res.end();
+  }
+  continue;
+}   
   }
 
   res.status(502).json({ error: "Todos los proveedores fallaron", details: errors });
@@ -441,9 +449,14 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", providers: providers.map(p => p.name) });
 });
 
+app.get("/metrics", (_req, res) => {
+  res.json({ metrics, uptime: process.uptime() });
+});   
+
 app.listen(PORT, () => {
   console.log(`?? Free LLM Gateway corriendo en http://localhost:${PORT}`);
   console.log(`   Provedores: ${providers.map(p => p.name).join(", ") || "NINGUNO"}`);
   console.log(`   POST /v1/chat/completions (stream: true para SSE)`);
   console.log(`   GET  /health`);
+  console.log(`   GET  /metrics`);
 });   
