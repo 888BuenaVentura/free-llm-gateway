@@ -445,6 +445,89 @@ app.post("/v1/chat/completions", async (req, res) => {
 });
 
 // --- Health check ---
+// --- Dashboard ---
+const DASHBOARD_HTML = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Free LLM Gateway</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f0f23;color:#e0e0e0;min-height:100vh;padding:2rem}
+h1{text-align:center;font-size:1.8rem;margin-bottom:.5rem;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{text-align:center;color:#888;margin-bottom:2rem;font-size:.9rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;max-width:1200px;margin:0 auto}
+.card{background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:1.2rem;position:relative;overflow:hidden;transition:transform .2s}
+.card:hover{transform:translateY(-2px);border-color:#667eea}
+.card .name{font-size:.85rem;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:.8rem}
+.card .status{position:absolute;top:1rem;right:1rem;width:10px;height:10px;border-radius:50%;background:#444}
+.card .status.active{background:#00e676;box-shadow:0 0 8px #00e676}
+.card .status.error{background:#ff5252;box-shadow:0 0 8px #ff5252}
+.stat{display:flex;justify-content:space-between;margin:.4rem 0;font-size:.9rem}
+.stat .label{color:#888}
+.stat .value{font-weight:600;color:#e0e0e0}
+.stat .value.tokens{color:#667eea}
+.stat .value.errors{color:#ff5252}
+.summary{max-width:1200px;margin:2rem auto;padding:1.5rem;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;text-align:center}
+.summary h2{font-size:1rem;color:#888;margin-bottom:1rem;text-transform:uppercase;letter-spacing:1px}
+.summary .big{font-size:2.5rem;font-weight:700;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.summary .detail{color:#888;font-size:.85rem;margin-top:.5rem}
+.uptime{margin-top:.5rem;color:#667eea;font-size:.8rem}
+</style>
+</head>
+<body>
+<h1>🚀 Free LLM Gateway</h1>
+<p class="subtitle">5 providers · Auto-failover · Streaming · Zero cost</p>
+<div class="grid" id="providers"></div>
+<div class="summary">
+  <h2>Total Tokens Consumidos</h2>
+  <div class="big" id="totalTokens">0</div>
+  <div class="detail" id="totalRequests">0 requests · 0 errors</div>
+  <div class="uptime" id="uptime"></div>
+</div>
+<script>
+async function refresh(){
+  try{
+    const r=await fetch('/metrics');
+    const d=await r.json();
+    const grid=document.getElementById('providers');
+    grid.innerHTML='';
+    let totalTokens=0,totalReq=0,totalErr=0;
+    const names=Object.keys(d.metrics);
+    for(const name of names){
+      const m=d.metrics[name];
+      totalTokens+=m.tokens;totalReq+=m.requests;totalErr+=m.errors;
+      const lastUsed=m.lastUsed?new Date(m.lastUsed).toLocaleTimeString():'—';
+      const status=m.errors>0?'error':(m.requests>0?'active':'');
+      grid.innerHTML+=\`<div class="card">
+        <div class="name">\${name}</div>
+        <div class="status \${status}"></div>
+        <div class="stat"><span class="label">Requests</span><span class="value">\${m.requests}</span></div>
+        <div class="stat"><span class="label">Errors</span><span class="value errors">\${m.errors}</span></div>
+        <div class="stat"><span class="label">Tokens</span><span class="value tokens">\${m.tokens.toLocaleString()}</span></div>
+        <div class="stat"><span class="label">Last used</span><span class="value">\${lastUsed}</span></div>
+      </div>\`;
+    }
+    document.getElementById('totalTokens').textContent=totalTokens.toLocaleString();
+    document.getElementById('totalRequests').textContent=\`\${totalReq} requests · \${totalErr} errors\`;
+    const up=d.uptime;
+    const mins=Math.floor(up/60);
+    const secs=Math.floor(up%60);
+    document.getElementById('uptime').textContent='Uptime: \${mins}m \${secs}s';
+  }catch(e){}
+}
+refresh();
+setInterval(refresh,5000);
+</script>
+</body>
+</html>`;
+
+app.get("/", (_req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(DASHBOARD_HTML);
+});   
+
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", providers: providers.map(p => p.name) });
 });
