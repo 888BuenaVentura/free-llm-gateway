@@ -12,6 +12,7 @@ const NVIDIA_KEY = process.env.NVIDIA_API_KEY;
 const COHERE_KEY = process.env.COHERE_API_KEY;
 const ZAI_KEY = process.env.ZAI_API_KEY;   
 const GROQ_KEY = process.env.GROQ_API_KEY;   
+const HF_KEY = process.env.HF_API_KEY;
 const PORT = 3000;
 
 interface Provider {
@@ -24,7 +25,7 @@ const providers: Provider[] = [];
 
 // --- Métricas ---
 const metrics: Record<string, { requests: number; errors: number; tokens: number; lastUsed: number }> = {};
-for (const p of ["google", "cloudflare", "nvidia", "cohere", "zai", "groq"]) {   
+for (const p of ["google", "cloudflare", "nvidia", "cohere", "zai", "groq", "huggingface"]) {      
   metrics[p] = { requests: 0, errors: 0, tokens: 0, lastUsed: 0 };
 }   
 
@@ -479,6 +480,77 @@ if (GROQ_KEY) {
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
           body: JSON.stringify({
             model: model || "openai/gpt-oss-120b",
+            messages,
+            stream: true,
+            ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+            ...(opts?.max_tokens !== undefined && { max_tokens: opts.max_tokens }),
+          }),
+        }
+      );
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error("No stream");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const payload = line.slice(6).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const json = JSON.parse(payload);
+              const text = json.choices?.[0]?.delta?.content || "";
+              if (text) {
+                res.write(`data: ${JSON.stringify({
+                  id: `chatcmpl-${Date.now()}`,
+                  object: "chat.completion.chunk",
+                  choices: [{ index: 0, delta: { content: text } }],
+                })}\n\n`);
+              }
+            } catch {}
+          }
+        }
+      }
+    },
+  });
+}   
+// --- HuggingFace ---
+if (HF_KEY) {
+  providers.push({
+    name: "huggingface",
+    async call(messages, model, opts) {
+      const resp = await fetch(
+        "https://router.huggingface.co/v1/chat/completions",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${HF_KEY}` },
+          body: JSON.stringify({
+            model: model || "meta-llama/Llama-3.3-70B-Instruct",
+            messages,
+            ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+            ...(opts?.max_tokens !== undefined && { max_tokens: opts.max_tokens }),
+          }),
+        }
+      );
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error.message || "HuggingFace error");
+      return {
+        text: data.choices?.[0]?.message?.content || "",
+        usage: data.usage ? { prompt_tokens: data.usage.prompt_tokens, completion_tokens: data.usage.completion_tokens, total_tokens: data.usage.total_tokens } : undefined,
+      };
+    },
+    async stream(messages, model, opts, res) {
+      const resp = await fetch(
+        "https://router.huggingface.co/v1/chat/completions",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${HF_KEY}` },
+          body: JSON.stringify({
+            model: model || "meta-llama/Llama-3.3-70B-Instruct",
             messages,
             stream: true,
             ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
