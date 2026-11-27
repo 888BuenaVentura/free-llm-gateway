@@ -393,6 +393,22 @@ if (ZAI_KEY) {
     },
   });
 }   
+// --- Smart Routing ---
+function bestProvider(messages: any[]): string {
+  const lastMsg = messages[messages.length - 1]?.content || "";
+  const lower = lastMsg.toLowerCase();
+
+    if (/\b(código|code|function|función|funciones|def |class |import |bug|error|fix|debug|script|api|python|javascript|typescript|java|html|css|sql|programa|programar|factorial|algoritmo)\b/i.test(lower)) {   
+    return "groq";
+  }
+  if (/\b(analiz|reason|explica por qué|compara|evalúa|pros y contras|demostr|teorema|algoritmo)\b/.test(lower)) {
+    return "nvidia";
+  }
+  if (/\b(translate|traduce|traducir|idioma|language|francés|inglés|español|alemán)\b/.test(lower)) {
+    return "google";
+  }
+  return "google";
+}   
 app.post("/v1/chat/completions", async (req, res) => {
   const { messages, model, temperature, max_tokens, stream } = req.body;
 
@@ -402,7 +418,13 @@ app.post("/v1/chat/completions", async (req, res) => {
 
   const errors: string[] = [];
 
-  for (const p of providers) {
+  const preferred = bestProvider(messages);
+  const ordered = [
+    ...providers.filter(p => p.name === preferred),
+    ...providers.filter(p => p.name !== preferred),
+  ];
+
+  for (const p of ordered) {
     try {
   metrics[p.name].requests++;
   if (stream) {
