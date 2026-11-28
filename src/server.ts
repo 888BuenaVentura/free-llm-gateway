@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import Database from "better-sqlite3";   
 
 const app = express();
 app.use(cors());
@@ -23,11 +24,40 @@ interface Provider {
 
 const providers: Provider[] = [];
 
-// --- Métricas ---
+// --- Métricas (SQLite) ---
+const db = new Database("metrics.db");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS metrics (
+    provider TEXT PRIMARY KEY,
+    requests INTEGER DEFAULT 0,
+    errors INTEGER DEFAULT 0,
+    tokens INTEGER DEFAULT 0,
+    lastUsed INTEGER DEFAULT 0
+  )
+`);
+
 const metrics: Record<string, { requests: number; errors: number; tokens: number; lastUsed: number }> = {};
-for (const p of ["google", "cloudflare", "nvidia", "cohere", "zai", "groq", "huggingface", "ovhcloud"]) {         
-  metrics[p] = { requests: 0, errors: 0, tokens: 0, lastUsed: 0 };
-}   
+for (const p of ["google", "cloudflare", "nvidia", "cohere", "zai", "groq", "huggingface", "ovhcloud"]) {
+  const row = db.prepare("SELECT * FROM metrics WHERE provider = ?").get(p) as any;
+  metrics[p] = row
+    ? { requests: row.requests, errors: row.errors, tokens: row.tokens, lastUsed: row.lastUsed }
+    : { requests: 0, errors: 0, tokens: 0, lastUsed: 0 };
+}
+
+function saveMetrics() {
+  const stmt = db.prepare(`
+    INSERT INTO metrics (provider, requests, errors, tokens, lastUsed)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(provider) DO UPDATE SET
+      requests = excluded.requests,
+      errors = excluded.errors,
+      tokens = excluded.tokens,
+      lastUsed = excluded.lastUsed
+  `);
+  for (const [p, m] of Object.entries(metrics)) {
+    stmt.run(p, m.requests, m.errors, m.tokens, m.lastUsed);
+  }
+}      
 
 // --- Google AI Studio ---
 if (GOOGLE_KEY) {
@@ -438,11 +468,13 @@ app.post("/v1/chat/completions", async (req, res) => {
     })}\n\n`);
     await p.stream(messages, model, { temperature, max_tokens }, res);
     res.write("data: [DONE]\n\n");
+    saveMetrics();
     return res.end();
   } else {
     const result = await p.call(messages, model, { temperature, max_tokens });
     metrics[p.name].tokens += result.usage?.total_tokens || 0;
     metrics[p.name].lastUsed = Date.now();
+    saveMetrics();
     return res.json({
       id: `chatcmpl-${Date.now()}`,
       object: "chat.completion",
@@ -455,6 +487,7 @@ app.post("/v1/chat/completions", async (req, res) => {
   }
 } catch (err: any) {
   metrics[p.name].errors++;
+  saveMetrics();
   errors.push(`${p.name}: ${err.message}`);
   if (stream) {
     res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
